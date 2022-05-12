@@ -1,0 +1,310 @@
+---
+title: "ml_cardiotocography_analysis"
+author: "Pinyu Chen"
+date: "4/14/2022"
+output: pdf_document
+---
+LB - FHR baseline (beats per minute) (106, 160)
+AC - # of accelerations per second (0, 9)
+FM - # of fetal movements per second (0, 98)
+UC - # of uterine contractions per second (0, 9)
+DL - # of light decelerations per second (0, 9)
+DS - # of severe decelerations per second (0, 1)
+DP - # of prolongued decelerations per second (0, 4)
+ASTV - percentage of time with abnormal short term variability (12, 87)
+MSTV - mean value of short term variability (0.2, 7)
+ALTV - percentage of time with abnormal long term variability (0, 91)
+MLTV - mean value of long term variability (0, 9.9)
+Width - width of FHR histogram (10, 99)
+Min - minimum of FHR histogram (100, 99)
+Max - Maximum of FHR histogram (122, 238)
+Nmax - # of histogram peaks (0, 9)
+Nzeros - # of histogram zeros (0, 8)
+Mode - histogram mode (100, 99)
+Mean - histogram mean (100, 99)
+Median - histogram median (100, 99)
+Variance - histogram variance (0, 98)
+Tendency - histogram tendency (-1, 1)
+CLASS - FHR pattern class code (1 to 10)
+NSP - fetal state class code (N=normal; S=suspect; P=pathologic)
+```{r, message=FALSE}
+library(xlsx)
+library(tidyverse)
+library(broom)
+library(ggplot2)
+```
+
+```{r}
+cdtgyDF <- read.xlsx2("../data/CTG.xls", 3, header = T)
+cdtgyDF %>% 
+  select(7:17, 19:28, 39:40) %>% 
+  slice(-1, -(2128:2130)) %>% 
+  select(-CLASS) -> cdtgyDF
+glimpse(cdtgyDF)
+```
+```{r}
+cdtgyDF[] <- lapply(cdtgyDF, as.numeric)
+```
+# Since we are only interesting in normal fetal's heart beats, we convert our response variable to 1 normal 0 abnormal.
+```{r}
+cdtgyDF %>% 
+  mutate(NSP = case_when(NSP == 2 ~ 0,
+                         NSP == 3 ~ 0,
+                         TRUE ~ as.numeric(NSP))) -> cdtgyDF
+table(cdtgyDF$NSP)
+```
+
+
+```{r}
+colSums(is.na(cdtgyDF))
+```
+```{r}
+# number of zero
+colSums(cdtgyDF == 0)
+```
+
+```{r}
+summary(cdtgyDF)
+```
+```{r}
+#FM, ALTV, Nzeros
+# cdtgyDF %>% 
+#   mutate(DS = as.factor(DS),
+#          CLASS = as.factor(CLASS),
+#          Tendency = as.factor(Tendency),
+#          DP = as.factor(DP),
+#          DL = as.factor(DL),
+#          AC = as.factor(AC),
+#          NSP = as.factor(NSP)) -> cdtgyDF
+```
+
+```{r}
+par(mfrow=c(3,3))
+hist(cdtgyDF$LB)
+plot(cdtgyDF$AC)
+hist(cdtgyDF$FM)
+hist(cdtgyDF$UC)
+hist(cdtgyDF$ASTV)
+hist(cdtgyDF$MSTV)
+hist(cdtgyDF$ALTV)
+hist(cdtgyDF$MLTV)
+plot(cdtgyDF$DL)
+plot(cdtgyDF$DS)
+plot(cdtgyDF$DP)
+hist(cdtgyDF$Width)
+hist(cdtgyDF$Min)
+hist(cdtgyDF$Max)
+hist(cdtgyDF$Nmax)
+hist(cdtgyDF$Nzeros)
+hist(cdtgyDF$Mode)
+hist(cdtgyDF$Mean)
+hist(cdtgyDF$Median)
+hist(cdtgyDF$Variance)
+plot(cdtgyDF$Tendency)
+plot(cdtgyDF$NSP)
+```
+
+```{r}
+library(caret)
+set.seed(40)
+
+smp_size <- floor(0.9 * nrow(cdtgyDF))
+train_ind <- sample(seq_len(nrow(cdtgyDF)), size = smp_size)
+
+train <- cdtgyDF[train_ind, ]
+test <- cdtgyDF[-train_ind, ]
+train_control <- trainControl(method = "repeatedcv", 
+                              number = 10, repeats = 3)
+```
+
+```{r}
+# library(scutr)
+# set.seed(123)
+# scutted <- SCUT(train, "NSP", undersample = undersample_kmeans,
+#                 usamp_opts = list(k=7))
+# table(scutted$NSP)
+```
+
+```{r}
+fit <- glm(as.factor(NSP) ~ ., data = train, family = binomial)
+summary(fit)
+```
+# 1 not defined because of singularities, remove Max
+```{r}
+fit1 <- glm(as.factor(NSP) ~ . -Max, data = train, family = binomial)
+summary(fit1)
+```
+
+# Check if there have collinearity between each variable.
+```{r}
+library(car)
+vif(fit1)
+```
+# Remove variable with value above 5, Median, Mean, Min, Mode
+```{r}
+fit1 <- glm(as.factor(NSP) ~ . -Max - Median - Mean - Min - Mode, data = train, family = binomial)
+summary(fit1)
+```
+# Check if there have collinearity between each variable.
+```{r}
+library(car)
+vif(fit1)
+```
+
+
+# modle selection
+```{r}
+library(leaps)
+NSP.lmR <- regsubsets(NSP ~ . -Max - Median - Mean - Min - Mode, data = train)
+Areg.summary <- summary(NSP.lmR)
+Areg.summary$cp
+Areg.summary$bic
+Areg.summary$adjr2
+
+# par(mfrow=c(1,1))
+# plot(Auto.lm, scale = "r2")
+# plot(Auto.lm, scale = "adjr2")
+# plot(Auto.lm, scale = "Cp")
+# plot(Auto.lm, scale = "bic")
+
+
+par(mfrow = c(2,2))
+plot(Areg.summary$rss, xlab = "Number of Variables", ylab = "RSS", type = "l")
+
+plot(Areg.summary$cp, xlab = "Number of Variables",ylab = "Cp", type = "l")
+which.min(Areg.summary$cp)
+points(8, Areg.summary$cp[8], col = "red", cex = 2,pch = 20)
+
+plot(Areg.summary$bic, xlab = "Number of Variables",ylab = "BIC", type = "l")
+which.min(Areg.summary$bic)
+points(8, Areg.summary$bic[8], col = "red", cex = 2,  pch = 20)
+
+plot(Areg.summary$adjr2, xlab = "Number of Variables", ylab = "Adjusted RSq", type = "l")
+which.max(Areg.summary$adjr2) 
+points(8, Areg.summary$adjr2[8], col = "red", cex = 2, pch = 20)
+```
+
+
+# Fit the model after model selection
+```{r}
+balance.fit <- glm(as.factor(NSP) ~ LB + AC + UC + ASTV + ALTV + DS + DP + Variance, data = train, family = binomial)
+summary(balance.fit)
+```
+# Check if there have residual with high leverage
+```{r}
+n <- nrow(train)
+p <- 8
+plot(cooks.distance(balance.fit), ylab="Cook's Distance")
+abline(qf(0.5, df1=5, df2=n-p), 0, lty=2)
+```
+# Logistic regression
+```{r}
+# training the model by assigning sales column
+# as target variable and rest other column
+# as independent variable
+model <- train(as.factor(NSP) ~ LB + AC + UC + ASTV + ALTV + DS + DP + Variance, data = train,
+               trControl = train_control, method = "glmnet", family = "binomial")
+print(model)
+
+yhat1 <- predict(model, test)
+confusionMatrix(table(yhat1, y = test$NSP))
+```
+
+The accuracy that we got from logistic regression is 0.8826 and the sensitivity is 0.6531. The final values used for the model were alpha = 1 and lambda = 0.004098959.
+
+# Lasso
+```{r}
+#define response variable
+lasso_ycdtgyDF <- train$NSP
+
+#define matrix of predictor variables
+lasso_xcdtgyDF <- data.matrix(train[, 1:21])
+
+library(glmnet)
+
+#perform k-fold cross-validation to find optimal lambda value
+set.seed(15)
+cv_model <- cv.glmnet(lasso_xcdtgyDF, lasso_ycdtgyDF, alpha = 1, family = "binomial", 
+                      trControl = train_control)
+
+#find optimal lambda value that minimizes test MSE
+best_lambda <- cv_model$lambda.min
+best_lambda # The lambda value that minimizes the test MSE
+
+
+#produce plot of test MSE by lambda value
+plot(cv_model) 
+
+best_model <- glmnet(lasso_xcdtgyDF, lasso_ycdtgyDF, alpha = 1, lambda = best_lambda, family = "binomial")
+coef(best_model)
+
+#define new observation
+new = data.matrix(test[, 1:21]) 
+
+#use lasso regression model to predict response value
+cdtgyDFF <- predict(best_model, s = best_lambda, newx = new)>0.5
+cdtgyDFF1 <- ifelse(cdtgyDFF == T, 1, 0)
+confusionMatrix(table(cdtgyDFF1, test$NSP))
+```
+The accuracy that we got from lasso regression is 0.8967 and sensitivity is 0.8163. The tuning parameter for lasso regression is 0.0008468474.
+
+
+# Rpart Tree
+```{r}
+library(rpart)
+library(rpart.plot)
+rpart.tree <- rpart(NSP ~ ., data = train, method = 'class')
+rpart.plot(rpart.tree, extra = 104)
+
+predict_unseen <- predict(rpart.tree, test, type = 'class')
+table_mat <- table(test$NSP, predict_unseen)
+confusionMatrix(table_mat)
+```
+We can learn from the plot above that in the beginning, ASTV that is >= 60 will be classified as 0 with 100%, and MSTV < 0.55 will be continued with ALTV. Records with ALTV >= 8 will be identified as 0 and so on. 
+
+The accuracy that we got from the tree is 0.9014 and the sensitivity is 0.8333.
+
+
+# KNN
+```{r}
+knnFitcd <- train(as.factor(NSP) ~ ., data = train, method = "knn", trControl = train_control, preProcess = c("center","scale"), tuneLength = 20)
+
+#Output of kNN fit
+knnFitcd
+```
+
+```{r}
+plot(knnFitcd)
+```
+
+```{r}
+knnPredict <- predict(knnFitcd,newdata = test)
+#Get the confusion matrix to see accuracy value and other parameter values
+confusionMatrix(table(knnPredict, test$NSP))
+```
+The accuracy that we got from KNN is 0.9108. and the sensitivity is 0.7143. Accuracy was used to select the optimal model using the largest value. The final value used for the model was k = 5.
+
+```{r}
+mean(knnPredict == test$NSP)
+```
+# Applying Random Forest to see the performance improvement
+```{r}
+# Random forrest
+rfFit <- train(as.factor(NSP) ~ ., data = train, method = "rf", trControl = train_control, tuneLength = 10)
+```
+```{r}
+library(randomForest)
+rfFit$finalModel
+importance(rfFit$finalModel)
+varImpPlot(rfFit$finalModel)
+plot(rfFit)
+plot(rfFit$finalModel)
+```
+```{r}
+rfPredict <- predict(rfFit,newdata = test)
+confusionMatrix(table(rfPredict, test$NSP))
+```
+The accuracy that we got from random forest is 0.9484. and the sensitivity is 0.8163. The tuning parameter for random forest is 10, and the number of trees is 500.
+
+After the comparison we concluded that random forest provide the highest accuracy (0.939) of the prediction of the data.
+
